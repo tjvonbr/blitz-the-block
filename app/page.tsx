@@ -1,19 +1,25 @@
-'use client'
+
+"use client"
 
 import React, { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { SearchBox } from "@mapbox/search-js-react";
-import type { SearchBoxRetrieveResponse } from "@mapbox/search-js-core/dist/searchbox/SearchBoxCore";
-import type { FeatureCollection, Point, GeoJsonProperties } from "geojson";
-const SearchBoxComponent = SearchBox as unknown as React.ComponentType<{
+import dynamic from "next/dynamic";
+import { SearchBoxCore } from "@mapbox/search-js-core";
+import type { SearchBoxRetrieveResponse, SearchBoxReverseResponse } from "@mapbox/search-js-core";
+import type { FeatureCollection, Point, GeoJsonProperties, Polygon } from "geojson";
+type FeaturePropsMinimal = { full_address?: string; address?: string; place_formatted?: string };
+type SearchBoxComponentProps = {
   accessToken: string;
   map?: mapboxgl.Map;
   marker?: boolean | mapboxgl.MarkerOptions;
   mapboxgl?: typeof mapboxgl;
   placeholder?: string;
+  value?: string;
+  onChange?: (value: string) => void;
   onRetrieve?: (res: SearchBoxRetrieveResponse) => void;
-}>;
+};
+const SearchBoxComponent = dynamic(() => import("@mapbox/search-js-react").then(m => m.SearchBox as unknown as React.ComponentType<SearchBoxComponentProps>), { ssr: false }) as unknown as React.ComponentType<SearchBoxComponentProps>;
 
 type Marker = {
   id: string;
@@ -28,6 +34,7 @@ type MapboxMapProps = {
   markers?: Marker[];
   style?: string;
   className?: string;
+  alertAddress?: string;
 };
 
 export default function MapboxMap({
@@ -36,10 +43,15 @@ export default function MapboxMap({
   markers = [],
   style = "mapbox://styles/mapbox/streets-v11",
   className = "w-screen h-screen",
+  alertAddress,
 }: MapboxMapProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const [mapInstance, setMapInstance] = useState<mapboxgl.Map | null>(null);
+  const markersRef = useRef<Array<{ id: number; marker: mapboxgl.Marker; circleSourceId: string; circleFillLayerId: string; circleOutlineLayerId: string }>>([]);
+  const markerIdCounterRef = useRef<number>(0);
+  const [searchValue, setSearchValue] = useState<string>("");
+  const searchCoreRef = useRef<SearchBoxCore | null>(null);
 
   const accessToken = 'pk.eyJ1IjoidGp2b25iciIsImEiOiJjbHg1N3hqemUxaTl3MmpvcnN4MWxwbWNpIn0.hipBsL0nFRpwDHgiSoiEmA'
 
@@ -147,17 +159,89 @@ export default function MapboxMap({
 
     mapRef.current = map;
     setMapInstance(map);
+    searchCoreRef.current = new SearchBoxCore({ accessToken });
+    // Allow clicking on the map to drop additional pins with 1-mile radius
+    map.on('click', (e: mapboxgl.MapMouseEvent) => {
+      addMarkerWithCircle([e.lngLat.lng, e.lngLat.lat]);
+    });
 
     return () => {
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
         setMapInstance(null);
+        markersRef.current = [];
+        searchCoreRef.current = null;
       }
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function addMarkerWithCircleAt(map: mapboxgl.Map, lngLat: [number, number], ctx: {
+    markersRef: React.MutableRefObject<Array<{ id: number; marker: mapboxgl.Marker; circleSourceId: string; circleFillLayerId: string; circleOutlineLayerId: string }>>;
+    markerIdCounterRef: React.MutableRefObject<number>;
+    searchCoreRef: React.MutableRefObject<SearchBoxCore | null>;
+    setSearchValue: (v: string) => void;
+    alertAddress?: string;
+  }) {
+    const id = ++ctx.markerIdCounterRef.current;
+    const circleSourceId = `radius-source-${id}`;
+    const circleFillId = `radius-fill-${id}`;
+    const circleOutlineId = `radius-outline-${id}`;
+    const marker = new mapboxgl.Marker({ draggable: true }).setLngLat(lngLat).addTo(map);
+  
+    // initial circle
+    const circle = makeCircle(lngLat, 1609.34);
+    map.addSource(circleSourceId, { type: 'geojson', data: circle });
+    map.addLayer({ id: circleFillId, type: 'fill', source: circleSourceId, paint: { 'fill-color': '#3b82f6', 'fill-opacity': 0.15 } });
+    map.addLayer({ id: circleOutlineId, type: 'line', source: circleSourceId, paint: { 'line-color': '#3b82f6', 'line-width': 2 } });
+  
+    const record = { id, marker, circleSourceId, circleFillLayerId: circleFillId, circleOutlineLayerId: circleOutlineId };
+    ctx.markersRef.current.push(record);
+  
+    marker.on('dragstart', () => {
+      map.dragPan.disable();
+      const el = marker.getElement();
+      if (el) el.style.cursor = 'grabbing';
+    });
+    marker.on('dragend', async () => {
+      map.dragPan.enable();
+      const el = marker.getElement();
+      if (el) el.style.cursor = 'grab';
+      const p = marker.getLngLat();
+      const src = map.getSource(circleSourceId) as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(makeCircle([p.lng, p.lat], 1609.34));
+  
+      try {
+        const core = ctx.searchCoreRef.current;
+        if (!core) return;
+        const resp: SearchBoxReverseResponse = await core.reverse({ lng: p.lng, lat: p.lat });
+        const f = resp.features?.[0];
+        const props = f?.properties as FeaturePropsMinimal | undefined;
+        const addr = props?.full_address || props?.address || props?.place_formatted || '';
+        ctx.setSearchValue(addr);
+        if (ctx.alertAddress && addr && addr.toLowerCase() === ctx.alertAddress.toLowerCase()) {
+          window.alert(`Selected address matched: ${addr}`);
+        }
+      } catch (e) {
+        console.error('Reverse geocode failed', e);
+      }
+    });
+  }
+
+  // Component-scoped helper: add marker + circle with current refs
+  function addMarkerWithCircle(lngLat: [number, number]) {
+    const map = mapRef.current;
+    if (!map) return;
+    addMarkerWithCircleAt(map, lngLat, {
+      markersRef,
+      markerIdCounterRef,
+      searchCoreRef,
+      setSearchValue,
+      alertAddress,
+    });
+  }
 
   useEffect(() => {
     const map = mapRef.current;
@@ -180,14 +264,26 @@ export default function MapboxMap({
         <SearchBoxComponent
           accessToken={accessToken}
           map={mapInstance ?? undefined}
-          marker={true}
+          marker={false}
           mapboxgl={mapboxgl}
           placeholder="Search places"
+          value={searchValue}
+          onChange={(v: string) => setSearchValue(v)}
           onRetrieve={(res: SearchBoxRetrieveResponse) => {
             const feature = res.features?.[0];
+            const props = feature?.properties as FeaturePropsMinimal | undefined;
             const coords = (feature?.geometry as unknown as { coordinates?: [number, number] } | undefined)?.coordinates;
             if (coords && mapRef.current) {
               mapRef.current.flyTo({ center: coords, zoom: Math.max(mapRef.current.getZoom(), 14) });
+              addMarkerWithCircle(coords);
+            }
+            const selectedAddress = props?.full_address || props?.address || props?.place_formatted;
+            if (alertAddress && selectedAddress && selectedAddress.toLowerCase() === alertAddress.toLowerCase()) {
+              window.alert(`Selected address matched: ${selectedAddress}`);
+            }
+            if (coords && mapRef.current) {
+              // also add a marker + circle for the retrieved result
+              addMarkerWithCircle(coords);
             }
           }}
         />
@@ -224,4 +320,42 @@ function escapeHtml(str?: string | number | null) {
     '"': "&quot;",
   };
   return String(str).replace(/[&<>"]+/g, (s) => map[s] || s);
+}
+
+// Approximate a circle polygon using 64 sides
+function makeCircle(center: [number, number], radiusMeters: number, steps = 64): FeatureCollection<Polygon> {
+  const [lng, lat] = center;
+  const coordinates: [number, number][] = [];
+  const earthRadius = 6371008.8; // meters
+  const latRad = (lat * Math.PI) / 180;
+  const lngRad = (lng * Math.PI) / 180;
+  const angularDistance = radiusMeters / earthRadius;
+
+  for (let i = 0; i <= steps; i++) {
+    const bearing = (i * 360 / steps) * Math.PI / 180;
+    const lat2 = Math.asin(
+      Math.sin(latRad) * Math.cos(angularDistance) +
+      Math.cos(latRad) * Math.sin(angularDistance) * Math.cos(bearing)
+    );
+    const lng2 = lngRad + Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latRad),
+      Math.cos(angularDistance) - Math.sin(latRad) * Math.sin(lat2)
+    );
+    coordinates.push([(lng2 * 180) / Math.PI, (lat2 * 180) / Math.PI]);
+  }
+
+  const polygon: FeatureCollection<Polygon> = {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'Polygon',
+          coordinates: [coordinates],
+        },
+      },
+    ],
+  };
+  return polygon;
 }
