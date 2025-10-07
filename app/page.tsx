@@ -1,103 +1,227 @@
-import Image from "next/image";
+'use client'
 
-export default function Home() {
+import React, { useEffect, useRef, useState } from "react";
+import mapboxgl from "mapbox-gl";
+import "mapbox-gl/dist/mapbox-gl.css";
+import { SearchBox } from "@mapbox/search-js-react";
+import type { SearchBoxRetrieveResponse } from "@mapbox/search-js-core/dist/searchbox/SearchBoxCore";
+import type { FeatureCollection, Point, GeoJsonProperties } from "geojson";
+const SearchBoxComponent = SearchBox as unknown as React.ComponentType<{
+  accessToken: string;
+  map?: mapboxgl.Map;
+  marker?: boolean | mapboxgl.MarkerOptions;
+  mapboxgl?: typeof mapboxgl;
+  placeholder?: string;
+  onRetrieve?: (res: SearchBoxRetrieveResponse) => void;
+}>;
+
+type Marker = {
+  id: string;
+  title?: string;
+  coordinates: [number, number];
+  properties?: Record<string, unknown>;
+};
+
+type MapboxMapProps = {
+  initialCenter?: [number, number];
+  initialZoom?: number;
+  markers?: Marker[];
+  style?: string;
+  className?: string;
+};
+
+export default function MapboxMap({
+  initialCenter = [-112.0740, 33.4484],
+  initialZoom = 11,
+  markers = [],
+  style = "mapbox://styles/mapbox/streets-v11",
+  className = "w-screen h-screen",
+}: MapboxMapProps) {
+  const mapContainer = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<mapboxgl.Map | null>(null);
+  const [mapInstance, setMapInstance] = useState<mapboxgl.Map | null>(null);
+
+  const accessToken = 'pk.eyJ1IjoidGp2b25iciIsImEiOiJjbHg1N3hqemUxaTl3MmpvcnN4MWxwbWNpIn0.hipBsL0nFRpwDHgiSoiEmA'
+
+  useEffect(() => {
+    if (!accessToken) {
+      console.error("Mapbox access token is required. Provide accessToken prop or set REACT_APP_MAPBOX_ACCESS_TOKEN.");
+      return;
+    }
+
+    mapboxgl.accessToken = accessToken;
+
+    if (mapRef.current) return;
+
+    const map = new mapboxgl.Map({
+      container: mapContainer.current as HTMLElement,
+      style,
+      center: initialCenter as mapboxgl.LngLatLike,
+      zoom: initialZoom,
+    });
+
+    map.addControl(new mapboxgl.NavigationControl(), "top-right");
+    map.addControl(new mapboxgl.ScaleControl({ maxWidth: 100, unit: "imperial" }));
+    map.addControl(new mapboxgl.FullscreenControl());
+    map.addControl(new mapboxgl.GeolocateControl({
+      positionOptions: { enableHighAccuracy: true },
+      trackUserLocation: true,
+      showUserHeading: true,
+    }));
+
+    map.on("load", () => {
+      map.addSource("markers", {
+        type: "geojson",
+        data: makeGeoJSON(markers),
+        cluster: true,
+        clusterMaxZoom: 14,
+        clusterRadius: 50,
+      });
+
+      map.addLayer({
+        id: "clusters",
+        type: "circle",
+        source: "markers",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": ["step", ["get", "point_count"], "#51bbd6", 10, "#f1f075", 30, "#f28cb1"],
+          "circle-radius": ["step", ["get", "point_count"], 15, 10, 20, 30, 25],
+        },
+      });
+
+      map.addLayer({
+        id: "cluster-count",
+        type: "symbol",
+        source: "markers",
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": "{point_count_abbreviated}",
+          "text-font": ["DIN Offc Pro Medium", "Arial Unicode MS Bold"],
+          "text-size": 12,
+        },
+      });
+
+      map.addLayer({
+        id: "unclustered-point",
+        type: "circle",
+        source: "markers",
+        filter: ["!has", "point_count"],
+        paint: {
+          "circle-color": "#11b4da",
+          "circle-radius": 8,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#fff",
+        },
+      });
+
+      map.on("click", "clusters", (e: mapboxgl.MapLayerMouseEvent) => {
+        const features = map.queryRenderedFeatures(e.point, { layers: ["clusters"] });
+        if (!features.length) return;
+        const clusterId = (features[0].properties as { cluster_id: number }).cluster_id;
+        const src = map.getSource("markers") as mapboxgl.GeoJSONSource;
+        src.getClusterExpansionZoom(clusterId, (error, zoom) => {
+          if (error) return;
+          const coords = (features[0].geometry as unknown as { coordinates: [number, number] }).coordinates;
+          map.easeTo({ center: coords, zoom: zoom ?? map.getZoom() });
+        });
+      });
+
+      map.on("click", "unclustered-point", (e: mapboxgl.MapLayerMouseEvent) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const coords = (f.geometry as unknown as { coordinates: [number, number] }).coordinates.slice() as [number, number];
+        const { title, id } = (f.properties as { title?: string; id?: string }) || {};
+
+        while (Math.abs(e.lngLat.lng - coords[0]) > 180) {
+          coords[0] += e.lngLat.lng > coords[0] ? 360 : -360;
+        }
+
+        new mapboxgl.Popup().setLngLat(coords).setHTML(`<strong>${escapeHtml(title || "Marker")}</strong><div>ID: ${escapeHtml(id || "-")}</div>`).addTo(map);
+      });
+
+      map.on("mouseenter", "clusters", () => map.getCanvas().style.cursor = "pointer");
+      map.on("mouseleave", "clusters", () => map.getCanvas().style.cursor = "");
+      map.on("mouseenter", "unclustered-point", () => map.getCanvas().style.cursor = "pointer");
+      map.on("mouseleave", "unclustered-point", () => map.getCanvas().style.cursor = "");
+    });
+
+    mapRef.current = map;
+    setMapInstance(map);
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        setMapInstance(null);
+      }
+    };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!map.isStyleLoaded()) {
+      const timer = setTimeout(() => {
+        const source = map.getSource("markers");
+        if (source && (source as mapboxgl.GeoJSONSource).setData) (source as mapboxgl.GeoJSONSource).setData(makeGeoJSON(markers));
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+
+    const source = map.getSource("markers");
+    if (source && (source as mapboxgl.GeoJSONSource).setData) (source as mapboxgl.GeoJSONSource).setData(makeGeoJSON(markers));
+  }, [markers]);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
+    <div className={`${className} relative`}>
+      <div className="absolute z-10 top-4 left-1/2 -translate-x-1/2 w-full max-w-xl px-4">
+        <SearchBoxComponent
+          accessToken={accessToken}
+          map={mapInstance ?? undefined}
+          marker={true}
+          mapboxgl={mapboxgl}
+          placeholder="Search places"
+          onRetrieve={(res: SearchBoxRetrieveResponse) => {
+            const feature = res.features?.[0];
+            const coords = (feature?.geometry as unknown as { coordinates?: [number, number] } | undefined)?.coordinates;
+            if (coords && mapRef.current) {
+              mapRef.current.flyTo({ center: coords, zoom: Math.max(mapRef.current.getZoom(), 14) });
+            }
+          }}
         />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </div>
+      <div ref={mapContainer} className="w-full h-full" />
     </div>
   );
+}
+
+function makeGeoJSON(items: Marker[]): FeatureCollection<Point, GeoJsonProperties> {
+  return {
+    type: "FeatureCollection",
+    features: (items || []).map((m) => ({
+      type: "Feature",
+      properties: {
+        id: m.id,
+        title: m.title || m.id,
+        ...(m.properties || {}),
+      },
+      geometry: {
+        type: "Point",
+        coordinates: [Number(m.coordinates[0]), Number(m.coordinates[1])],
+      },
+    })),
+  } as FeatureCollection<Point, GeoJsonProperties>;
+}
+
+function escapeHtml(str?: string | number | null) {
+  if (str == null) return "";
+  const map: Record<string, string> = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+  };
+  return String(str).replace(/[&<>"]+/g, (s) => map[s] || s);
 }
