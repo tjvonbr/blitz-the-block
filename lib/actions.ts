@@ -1,6 +1,6 @@
 "use server"
 
-import { prisma } from "@/lib/prisma"
+import db from "@/lib/prisma"
 import { signUpSchema } from "@/lib/validations"
 
 export async function createUser(formData: FormData) {
@@ -9,10 +9,9 @@ export async function createUser(formData: FormData) {
       firstName: formData.get("firstName"),
       lastName: formData.get("lastName"),
       email: formData.get("email"),
-      password: formData.get("password"),
     })
 
-    const existingUser = await prisma.user.findFirst({
+    const existingUser = await db.user.findFirst({
       where: { email: data.email }
     })
 
@@ -20,7 +19,7 @@ export async function createUser(formData: FormData) {
       return { error: "A user with this email already exists!  Please sign in instead." }
     }
 
-    const user = await prisma.user.create({
+    const user = await db.user.create({
       data: {
         firstName: data.firstName,
         lastName: data.lastName,

@@ -1,7 +1,6 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
@@ -13,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { Form } from "./ui/form";
 import { toast } from "sonner";
 import { createUser } from "@/lib/actions"
-import { signIn } from "next-auth/react"
+import authClient from "@/lib/auth-client";
 import { signUpSchema } from "@/lib/validations";
 
 type UserAuthFormProps = React.HTMLAttributes<HTMLDivElement>;
@@ -26,16 +25,12 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
   });
 
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
-  const [isGitHubLoading, setIsGitHubLoading] = React.useState<boolean>(false);
-
-  const searchParams = useSearchParams();
-  const router = useRouter();
 
   async function onSubmit(data: FormData) {
+    console.log(data);
     setIsLoading(true);
 
     try {
-      // Create FormData for server action
       const formData = new FormData();
       formData.append("firstName", data.firstName);
       formData.append("lastName", data.lastName);
@@ -47,22 +42,20 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
         throw new Error(result.error);
       }
 
-      const signInResult = await signIn("resend", {
+      const { error } = await authClient.signUp.email({
         email: data.email,
-        redirect: false,
-        callbackUrl: searchParams?.get("from") || "/properties",
+        password: data.password,
+        name: `${data.firstName} ${data.lastName}`,
+        callbackURL: "/"
       });
 
       setIsLoading(false);
 
-      if (!signInResult) {
+      if (error) {
         return toast.error("Something went wrong.", {
           description: "Your sign in request failed. Please try again.",
         });
       }
-
-      // Redirect to verify email page
-      router.push("/verify-email");
     } catch (error) {
       console.error(error);
       setIsLoading(false);
@@ -80,7 +73,7 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
             <div className="grid gap-2">
               <div className="grid grid-cols-2 gap-2">
                 <div className="grid gap-1">
-                  <Label className="" htmlFor="firstName">
+                  <Label htmlFor="firstName">
                     First name
                   </Label>
                   <Input
@@ -89,7 +82,7 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
                     autoCapitalize="none"
                     autoComplete="firstName"
                     autoCorrect="off"
-                    disabled={isLoading || isGitHubLoading}
+                    disabled={isLoading}
                     {...form.register("firstName")}
                   />
                   {form.formState.errors?.firstName && (
@@ -99,7 +92,7 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
                   )}
                 </div>
                 <div className="grid gap-1">
-                  <Label className="" htmlFor="lastName">
+                  <Label htmlFor="lastName">
                     Last name
                   </Label>
                   <Input
@@ -108,7 +101,7 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
                     autoCapitalize="none"
                     autoComplete="lastName"
                     autoCorrect="off"
-                    disabled={isLoading || isGitHubLoading}
+                    disabled={isLoading}
                     {...form.register("lastName")}
                   />
                   {form.formState.errors?.lastName && (
@@ -122,17 +115,33 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
                 <Label htmlFor="email">Email</Label>
                 <Input
                   id="email"
-                  placeholder="name@example.com"
                   type="email"
                   autoCapitalize="none"
                   autoComplete="email"
                   autoCorrect="off"
-                  disabled={isLoading || isGitHubLoading}
+                  disabled={isLoading}
                   {...form.register("email")}
                 />
                 {form.formState.errors?.email && (
                   <p className="px-1 text-xs text-red-600">
                     {form.formState.errors.email.message}
+                  </p>
+                )}
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  autoCapitalize="none"
+                  autoComplete="password"
+                  autoCorrect="off"
+                  disabled={isLoading}
+                  {...form.register("password")}
+                />
+                {form.formState.errors?.password && (
+                  <p className="px-1 text-xs text-red-600">
+                    {form.formState.errors.password.message}
                   </p>
                 )}
               </div>
@@ -145,30 +154,6 @@ export function SignUpForm({ className, ...props }: UserAuthFormProps) {
             </button>
           </div>
         </form>
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <span className="w-full border-t" />
-          </div>
-          <div className="relative flex justify-center text-xs uppercase">
-            <span className="bg-background px-2 text-muted-foreground">
-              Or continue with
-            </span>
-          </div>
-        </div>
-        <button
-          type="button"
-          className={cn(buttonVariants({ variant: "outline" }), "hover:cursor-pointer")}
-          onClick={() => {
-            setIsGitHubLoading(true);
-          }}
-          disabled={isLoading || isGitHubLoading}
-        >
-          {isGitHubLoading ? (
-            <Icons.spinner className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            "Google"
-          )}
-        </button>
       </Form>
     </div>
   );
