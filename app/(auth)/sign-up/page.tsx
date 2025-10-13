@@ -4,6 +4,9 @@ import { Icons } from "@/components/icons"
 import { SignUpForm } from "@/components/sign-up-form"
 import { Suspense } from "react"
 import { buttonVariants } from "@/components/ui/button"
+import { headers } from "next/headers"
+import { auth } from "@/lib/auth"
+import { redirect } from "next/navigation"
 
 export const metadata = {
   title: "Create an account",
@@ -11,6 +14,16 @@ export const metadata = {
 }
 
 export default async function SignUpPage() {  
+  const session = await auth.api.getSession({
+    headers: await headers()
+  })
+
+  console.log(session)
+
+  if (session) {
+    redirect("/")
+  }
+
   return (
     <div className="container grid h-screen w-screen flex-col items-center justify-center lg:max-w-none lg:grid-cols-2 lg:px-0">
       <div className="hidden h-full bg-muted lg:block p-9">

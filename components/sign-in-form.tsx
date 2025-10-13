@@ -38,6 +38,7 @@ export function LoginForm({ className, ...props }: UserAuthFormProps) {
       setIsLoading(false);
 
       if (error) {
+        console.log(error);
         return toast.error("Something went wrong.", {
           description: "Your sign in request failed. Please try again.",
         });

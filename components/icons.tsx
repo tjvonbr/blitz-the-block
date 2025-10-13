@@ -1,6 +1,7 @@
-import { Flag, type LucideIcon, ChevronLeft } from "lucide-react"
+import { Flag, type LucideIcon, ChevronLeft, Loader2 } from "lucide-react"
 
 export const Icons: Record<string, LucideIcon> = {
   logo: Flag,
-  left: ChevronLeft
+  left: ChevronLeft,
+  spinner: Loader2
 }

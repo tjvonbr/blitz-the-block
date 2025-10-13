@@ -9,23 +9,38 @@ export async function createUser(formData: FormData) {
       firstName: formData.get("firstName"),
       lastName: formData.get("lastName"),
       email: formData.get("email"),
+      password: formData.get("password"),
+      businessName: formData.get("businessName"),
+      industry: formData.get("industry"),
+      serviceArea: formData.get("serviceArea"),
     })
 
-    const existingUser = await db.user.findFirst({
-      where: { email: data.email }
-    })
+    let user = await db.user.findFirst({ where: { email: data.email } })
 
-    if (existingUser) {
-      return { error: "A user with this email already exists!  Please sign in instead." }
+    if (!user) {
+      user = await db.user.create({
+        data: {
+          firstName: data.firstName,
+          lastName: data.lastName,
+          email: data.email,
+        }
+      })
     }
 
-    const user = await db.user.create({
-      data: {
-        firstName: data.firstName,
-        lastName: data.lastName,
-        email: data.email,
-      }
+    const existingBusiness = await db.business.findFirst({
+      where: { userId: user.id, name: data.businessName }
     })
+    
+    if (!existingBusiness) {
+      await db.business.create({
+        data: {
+          userId: user.id,
+          name: data.businessName,
+          industry: data.industry,
+          serviceArea: data.serviceArea,
+        }
+      })
+    }
 
     return { success: true, user }
   } catch (error) {
